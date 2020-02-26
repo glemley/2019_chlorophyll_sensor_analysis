@@ -1,0 +1,218 @@
+---
+title: "chlorophyll_r_analysis"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(pals)
+library(RColorBrewer)
+
+root.dir <- rprojroot::find_root("2019_chlorophyll_sensor_analysis.Rproj")
+
+# Gather all 2019 field data and filter down to sites where ProDSS was used. Check on -5 values!
+
+field.data.macro <- file.path(root.dir, "data", "20191212_Macro_Field_2019.xlsx") %>% 
+  readxl::read_excel(sheet = "Sheet1") %>% 
+  mutate(Chl_ugL = as.numeric(Chl_ugL)) %>% 
+  mutate(COLL_DATE = as.Date(COLL_DATE, "%m/%d/%Y")) 
+  # filter(!is.na(Chl_ugL)) %>% 
+  # filter(Chl_ugL != -9999) %>%  
+  # filter(Chl_ugL != -5)
+
+field.data.chemonly <- file.path(root.dir, "data", "20191212_Chemistry_Only_2019.xlsx") %>% 
+  readxl::read_excel(sheet = "Sheet1") %>% 
+  mutate(Chl_ugL = as.numeric(Chl_ugL)) %>% 
+  mutate(COLL_DATE = as.Date(COLL_DATE, "%m/%d/%Y"))  
+  # filter(!is.na(Chl_ugL)) %>% 
+  # filter(Chl_ugL != -9999) %>% 
+  # filter(Chl_ugL != -5)
+
+### Gather chem lab data to match the following:
+
+# > table(field.data.macro$PROJECT)
+# 
+#         OTHER           RAS      RIBS_Scr         RMN             Special_Study               WALLKILL 
+#             1            24       124             1               3                           3 
+##          (habitat)                               (this is RSC)   (1 Patroons, 2 FL tribs)        
+
+# > table(field.data.chemonly$PROJECT)
+# 
+#        Mohawk         OTHER           RAS              RIBS_Scr Special_Study      WALLKILL 
+#            23             1            64                   3             8            40 
+##                      09-INDN-2.0 (Alene, Matt K..?)
+
+# Project names:
+# Screenings, Fl tribs, Patroons, Halfway Cr, Birch Cr., Black Cr., Mohawk projects (incl 7/31 multiplate), Wallkill, habitat (only 2 samples?),
+
+
+# Create simple, joined field data table
+
+field.macro.simple <- field.data.macro %>% 
+  select(SITE_ID, COLL_DATE, CREW, TEMP, PERCENT_SAT, DO, COND, SALINITY, PH, Chl_ugL, Chl_RFU, PC_ugL, PC_RFU, WATER_CHEM_COLLECT, CHEM_SAMP_LOC, EQUIP_USED, LANDUSE, W_DEPTH, W_WIDTH, CUR_SPD, CANOPY, ALGAE_D, ALGAE_S, ALGAE_FIL, BOTTOM_TYPE, DOM_SUBSTRATE, )
+
+field.chemonly.simple <- field.data.chemonly %>% 
+  select(SITE_ID, COLL_DATE, CREW, TEMP, PERCENT_SAT, DO, COND, SALINITY, PH, Chl_ugL, Chl_RFU, PC_ugL, PC_RFU, WATER_CHEM_COLLECT, CHEM_SAMP_LOC, EQUIP_USED, LANDUSE, W_DEPTH, W_WIDTH, CUR_SPD, CANOPY, ALGAE_D, ALGAE_S, ALGAE_FIL, BOTTOM_TYPE, DOM_SUBSTRATE, )
+
+field.all <- bind_rows(field.macro.simple, field.chemonly.simple) %>% 
+  mutate(EVENT_ID = paste0(SITE_ID,"_",as.character(COLL_DATE))) %>% 
+  select(EVENT_ID, everything())
+  
+# Look for duplicate event IDs
+field.all.dups <- field.all %>% 
+  group_by(EVENT_ID) %>% 
+  filter(n()>1)
+
+rm(field.data.macro, field.macro.simple, field.data.chemonly, field.chemonly.simple)
+
+```
+
+Load in lab data, subset, and join project names
+```{r}
+lab.data <- file.path(root.dir, "data", "2019_chlorophyll_pull_chem_qaqcd_2020-02-25.csv") %>% 
+  read_csv() %>% 
+  # select(SiteID, DEC_sample_type, sample_name, sample_source, sample_date, sample_delivery_group, sample_receipt_date, analysis_date, prep_date, chemical_name, result_value, result_unit, lab_qualifiers, method_detection_limit, reporting_detection_limit, quantitation_limit, detection_limit_unit) %>% 
+  filter(chemical_name == "Chlorophyll A") %>% 
+  mutate(sample_date2 = as.Date(sample_date, "%Y-%m-%d")) %>% 
+  mutate(EVENT_ID = paste0(SiteID,"_",as.character(sample_date2))) %>% 
+  rename(SDG = sample_delivery_group)
+
+# Check for duplicate event IDs
+lab.dups <- lab.data %>% 
+  group_by(EVENT_ID) %>% 
+  filter(n()>1)
+
+# Import ALS project list for joining project names by SDG
+project.names <- file.path(root.dir, "data", "ALS_project_list_NYSDEC 2019_2019-12-04.xlsx") %>%
+  readxl::read_excel(sheet = "Streams only") %>%
+  select(SDG, Project)
+
+lab.data <- left_join(lab.data, project.names, by = "SDG")
+
+rm(lab.dups, project.names)
+
+```
+
+Join field and lab data
+```{r}
+lab.field.join <- full_join(field.all, lab.data, by = "EVENT_ID")
+
+#Check for missing lab data
+missing.fielddata <- lab.field.join %>% 
+  filter(is.na(SITE_ID)) %>% 
+  select(EVENT_ID, SiteID, sys_sample_code, chemical_name, sample_date, fraction, result_value, result_unit, validator_qualifiers, interpreted_qualifiers)
+
+# write.csv(missing.fielddata, "missing_fielddata.csv", row.names = FALSE)
+
+#Check for missing field data
+missing.labdata <- lab.field.join %>% 
+  filter(is.na(sys_sample_code)) %>% 
+  select(EVENT_ID, SiteID, sys_sample_code, chemical_name, sample_date, fraction, result_value, result_unit, validator_qualifiers, interpreted_qualifiers)
+
+
+#Filter down to sites where both ProDSS and lab data are present
+lab.field.join <- lab.field.join %>% 
+  filter(!is.na(Chl_ugL)) %>%
+  filter(Chl_ugL != -9999) %>%
+  filter(Chl_ugL != -5) %>% 
+  filter(!is.na(sys_sample_code))
+
+# 277 records, 191 unique sites present in above.
+  
+# lab.field.join.export <- lab.field.join %>% 
+#   select(EVENT_ID, Chl_ugL, result_value)
+
+# write.csv(lab.field.join, "chl_prodss_datajoin.csv", row.names = FALSE)
+
+rm(field.all, field.all.dups, missing.fielddata, missing.labdata)
+
+```
+
+Determine outliers and extremes
+```{r}
+library(ggstatsplot)
+
+quantile.lab <- quantile(lab.field.join$result_value, probs=c(.25, .75), na.rm = TRUE)
+iqr.lab <- IQR(lab.field.join$result_value, na.rm = TRUE)
+# up.lab.outlier <-  quantile.lab[2]+1.5*iqr.lab # Upper Range  
+# low.lab.outlier <- quantile.lab[1]-1.5*iqr.lab # Lower Range
+# up.lab.extreme <-  quantile.lab[2]+3*iqr.lab # Upper Range  
+# low.lab.extreme <- quantile.lab[1]-3*iqr.lab # Lower Range
+
+
+quantile.field <- quantile(lab.field.join$Chl_ugL, probs=c(.25, .75), na.rm = TRUE)
+iqr.field <- IQR(lab.field.join$Chl_ugL, na.rm = TRUE)
+# up.field.outlier <-  quantile.field[2]+1.5*iqr.field # Upper Range  
+# low.field.outlier <- quantile.field[1]-1.5*iqr.field # Lower Range
+# up.field.extreme <-  quantile.field[2]+3*iqr.field # Upper Range  
+# low.field.extreme <- quantile.field[1]-3*iqr.field # Lower Range
+
+lab.field.join.nooutliers <- lab.field.join %>% 
+  subset(result_value > (quantile.lab[1] - 1.5*iqr.lab) & result_value < (quantile.lab[2]+1.5*iqr.lab)) %>%
+  subset(Chl_ugL > (quantile.field[1] - 1.5*iqr.field) & Chl_ugL < (quantile.field[2]+1.5*iqr.field))
+
+lab.field.join.noextremes <- lab.field.join %>% 
+  subset(result_value > (quantile.lab[1] - 3*iqr.lab) & result_value < (quantile.lab[2]+3*iqr.lab)) %>%
+  subset(Chl_ugL > (quantile.field[1] - 3*iqr.field) & Chl_ugL < (quantile.field[2]+3*iqr.field))
+
+```
+
+
+Plotting
+```{r echo = FALSE, fig.width=12, fig.height=6}
+
+ggplot(data = lab.field.join, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = Project)) +
+  scale_fill_manual(values=as.vector(alphabet2(11))) +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1))
+  xlab("ProDSS Chl ug/L") +
+  ylab("Extracted chl ug/L")
+
+ggplot(data = lab.field.join.noextremes, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = Project)) +
+  scale_fill_manual(values=as.vector(alphabet2(11))) +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1))
+  xlab("ProDSS Chl ug/L") +
+  ylab("Extracted chl ug/L")
+
+ggplot(data = lab.field.join.nooutliers, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = Project)) +
+  scale_fill_manual(values=as.vector(alphabet2(11))) +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1))
+  xlab("ProDSS Chl ug/L") +
+  ylab("Extracted chl ug/L")
+
+
+# ggplot(data = lab.field.join, aes(x = 1, y = result_value)) +
+#   geom_boxplot() 
+# 
+# ggplot(data = lab.field.join, aes(x = 1, y = Chl_ugL)) +
+#   geom_boxplot() 
+
+  # scale_color_manual(values = c("wallkill peers 2018" = "green", "wallkill special study 2017" = "purple", "wallkill special study 2018" = "black")) +
+  # scale_shape_manual(values = c("baseline" = 16, "event" = 17, "not observed" = 1)) +
+  # theme_classic() +  
+  # theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=0.5)) +
+  # scale_y_log10() +
+  # ggtitle("Temperature") +
+
+# ggsave(filename = "Wallkill_field_temp.png", width = 10, height = 6, units = "in", path = file.path(root.dir, "data/Wallkill_2018/plots"))
+
+```
+
+# Next steps:
+# Create equation, R^2
+# plot by EQUIP_USED and CHEM_SAMP_LOC as well
+# plot individual screening trips by crew (color scale)?
+# plot only lower level results (alene suggestion)
+# river size/width, other included params?
+
+
+```{r}
+
+
+```
+
