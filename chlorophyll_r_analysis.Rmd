@@ -7,6 +7,7 @@ output: html_document
 library(tidyverse)
 library(pals)
 library(RColorBrewer)
+library(ggpmisc)
 
 root.dir <- rprojroot::find_root("2019_chlorophyll_sensor_analysis.Rproj")
 
@@ -15,18 +16,19 @@ root.dir <- rprojroot::find_root("2019_chlorophyll_sensor_analysis.Rproj")
 field.data.macro <- file.path(root.dir, "data", "20191212_Macro_Field_2019.xlsx") %>% 
   readxl::read_excel(sheet = "Sheet1") %>% 
   mutate(Chl_ugL = as.numeric(Chl_ugL)) %>% 
+  mutate(PC_ugL = as.numeric(PC_ugL)) %>% 
+  mutate(Chl_RFU = as.numeric(Chl_RFU)) %>% 
+  mutate(PC_RFU = as.numeric(PC_RFU)) %>% 
   mutate(COLL_DATE = as.Date(COLL_DATE, "%m/%d/%Y")) 
-  # filter(!is.na(Chl_ugL)) %>% 
-  # filter(Chl_ugL != -9999) %>%  
-  # filter(Chl_ugL != -5)
+
 
 field.data.chemonly <- file.path(root.dir, "data", "20191212_Chemistry_Only_2019.xlsx") %>% 
   readxl::read_excel(sheet = "Sheet1") %>% 
   mutate(Chl_ugL = as.numeric(Chl_ugL)) %>% 
+  mutate(PC_ugL = as.numeric(PC_ugL)) %>% 
+  mutate(Chl_RFU = as.numeric(Chl_RFU)) %>% 
+  mutate(PC_RFU = as.numeric(PC_RFU)) %>% 
   mutate(COLL_DATE = as.Date(COLL_DATE, "%m/%d/%Y"))  
-  # filter(!is.na(Chl_ugL)) %>% 
-  # filter(Chl_ugL != -9999) %>% 
-  # filter(Chl_ugL != -5)
 
 ### Gather chem lab data to match the following:
 
@@ -56,14 +58,21 @@ field.chemonly.simple <- field.data.chemonly %>%
 
 field.all <- bind_rows(field.macro.simple, field.chemonly.simple) %>% 
   mutate(EVENT_ID = paste0(SITE_ID,"_",as.character(COLL_DATE))) %>% 
-  select(EVENT_ID, everything())
-  
+  select(EVENT_ID, everything()) %>% 
+  mutate(W_DEPTH = as.numeric(W_DEPTH)) %>% 
+  mutate(W_WIDTH = as.numeric(W_WIDTH)) %>% 
+  mutate(CUR_SPD = as.numeric(CUR_SPD)) %>% 
+  mutate(CANOPY = as.numeric(CANOPY)) %>% 
+  mutate(ALGAE_D = as.numeric(ALGAE_D)) %>% 
+  na_if(-9999) %>% 
+  na_if(-5)
+
 # Look for duplicate event IDs
 field.all.dups <- field.all %>% 
   group_by(EVENT_ID) %>% 
   filter(n()>1)
 
-rm(field.data.macro, field.macro.simple, field.data.chemonly, field.chemonly.simple)
+# rm(field.data.macro, field.macro.simple, field.data.chemonly, field.chemonly.simple)
 
 ```
 
@@ -77,6 +86,9 @@ lab.data <- file.path(root.dir, "data", "2019_chlorophyll_pull_chem_qaqcd_2020-0
   mutate(EVENT_ID = paste0(SiteID,"_",as.character(sample_date2))) %>% 
   rename(SDG = sample_delivery_group)
 
+# Replace nondetect result_values with quanitatiation limits (no MDLs for chl...?)
+lab.data$result_value <- ifelse(is.na(lab.data$result_value), lab.data$quantitation_limit, lab.data$result_value)
+
 # Check for duplicate event IDs
 lab.dups <- lab.data %>% 
   group_by(EVENT_ID) %>% 
@@ -85,7 +97,8 @@ lab.dups <- lab.data %>%
 # Import ALS project list for joining project names by SDG
 project.names <- file.path(root.dir, "data", "ALS_project_list_NYSDEC 2019_2019-12-04.xlsx") %>%
   readxl::read_excel(sheet = "Streams only") %>%
-  select(SDG, Project)
+  select(SDG, Project) %>% 
+  mutate(Project = as.factor(Project))
 
 lab.data <- left_join(lab.data, project.names, by = "SDG")
 
@@ -128,8 +141,15 @@ rm(field.all, field.all.dups, missing.fielddata, missing.labdata)
 
 ```
 
-Determine outliers and extremes
+Filter data manually, and by outliers and extremes
 ```{r}
+lab.field.join2 <- lab.field.join %>% 
+  filter(EVENT_ID != "09-HAMM-1.9_2019-08-27") %>% 
+  filter(EVENT_ID != "09-FSCR-9.2_2019-09-11") %>% 
+  filter(EVENT_ID != "09-BLAH-4.2_2019-08-27")
+  
+# Using methods outlined here: https://www.r-bloggers.com/how-to-remove-outliers-in-r/
+
 library(ggstatsplot)
 
 quantile.lab <- quantile(lab.field.join$result_value, probs=c(.25, .75), na.rm = TRUE)
@@ -157,62 +177,420 @@ lab.field.join.noextremes <- lab.field.join %>%
 
 ```
 
+Base plot function
+```{r}
+# plot.all <- function(param, title, ylabel){
+#   ggplot()+
+#   geom_point(data = lab.field.join, aes(x = Chl_ugL, y = result_value)) +
+#   # scale_color_manual(values = c("baseline" = "blue", "event" = "orange", "not observed" = "black")) +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=0.5)) +
+#   ggtitle(title) +
+#   xlab("Site ID") +
+#   ylab(ylabel) +
+#   guides(color=guide_legend(override.aes=list(shape=15, size = 5)))+
+#   theme(legend.key=element_blank())
+# }
+```
 
-Plotting
+
+# Plot all (outliers, no outliers, no extremes) 
+
+```{r}
+
+
+ggplot(data = lab.field.join, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, color = "blue", aes()) +
+  geom_smooth(method=lm, formula = y ~ x) +
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), parse = TRUE) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  ggtitle("YSI TA Sensor vs Lab-extracted Chl-a (all data)")
+
+ggplot(data = lab.field.join2, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, color = "blue", aes()) +
+  geom_smooth(method=lm, formula = y ~ x) +
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), parse = TRUE) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  ggtitle("YSI TA Sensor vs Lab-extracted Chl-a (filtered)")
+
+ggplot(data = lab.field.join.noextremes, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, color = "blue", aes()) +
+  geom_smooth(method=lm, formula = y ~ x) +
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), parse = TRUE) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  ggtitle("YSI TA Sensor vs Lab-extracted Chl-a (extremes removed)")
+
+ggplot(data = lab.field.join, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = Project)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  ggtitle("YSI TA Sensor vs Lab-extracted Chl-a (all data)")
+
+ggplot(data = lab.field.join.noextremes, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = Project)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  ggtitle("YSI TA Sensor vs Lab-extracted Chl-a (extremes removed)")
+
+ggplot(data = lab.field.join.nooutliers, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = Project)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  ggtitle("YSI TA Sensor vs Lab-extracted Chl-a (outliers removed)")
+
+```
+
+
+# Plot by collection method
+
+```{r echo = FALSE, fig.width=12, fig.height=4}
+
+# Filter data to remove NAs and Pail samples
+lab.field.join.equip <- lab.field.join %>% 
+  filter(EQUIP_USED != "Pail") %>% 
+  filter(!is.na(EQUIP_USED))
+
+lab.field.join.noextremes.equip <- lab.field.join.noextremes %>% 
+  filter(EQUIP_USED != "Pail") %>% 
+  filter(!is.na(EQUIP_USED))
+
+lab.field.join.nooutliers.equip <- lab.field.join.nooutliers %>% 
+  filter(EQUIP_USED != "Pail") %>% 
+  filter(!is.na(EQUIP_USED))
+
+# No ourliers removed
+ggplot(data = lab.field.join.equip, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = EQUIP_USED)) +
+  geom_smooth(method=lm) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~EQUIP_USED, ncol = 5, scales = "fixed")
+
+# Extremes removed
+ggplot(data = lab.field.join.noextremes.equip, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = EQUIP_USED), show.legend = FALSE) +
+  geom_smooth(method=lm, formula = y ~ x) +
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), parse = TRUE) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~EQUIP_USED, ncol = 5, scales = "free")
+
+ggplot(data = lab.field.join.noextremes.equip, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = EQUIP_USED)) +
+  geom_smooth(method=lm) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~EQUIP_USED, ncol = 5, scales = "fixed")
+
+#Ourtliers removed
+ggplot(data = lab.field.join.nooutliers.equip, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = EQUIP_USED)) +
+  geom_smooth(method=lm) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~EQUIP_USED, ncol = 5, scales = "fixed")
+```
+
+
+# Plot by project
+
 ```{r echo = FALSE, fig.width=12, fig.height=6}
 
 ggplot(data = lab.field.join, aes(x = Chl_ugL, y = result_value), size = 3) +
   geom_point(shape = 19, size = 2, aes(color = Project)) +
-  scale_fill_manual(values=as.vector(alphabet2(11))) +
-  # geom_smooth(method=lm) +
-  # geom_abline(aes(intercept=0, slope=1))
-  xlab("ProDSS Chl ug/L") +
-  ylab("Extracted chl ug/L")
+  geom_smooth(method=lm) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~Project, ncol = 5, scales = "free") 
 
 ggplot(data = lab.field.join.noextremes, aes(x = Chl_ugL, y = result_value), size = 3) +
   geom_point(shape = 19, size = 2, aes(color = Project)) +
-  scale_fill_manual(values=as.vector(alphabet2(11))) +
-  # geom_smooth(method=lm) +
-  # geom_abline(aes(intercept=0, slope=1))
-  xlab("ProDSS Chl ug/L") +
-  ylab("Extracted chl ug/L")
+  geom_smooth(method=lm) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~Project, ncol = 5, scales = "fixed") 
+  # scale_x_continuous(limits = c(0, 8)) +
+  # scale_y_continuous(limits = c(0, 8))
+
+# Why does the plot below omit data??? Only sets manual axis limits from above.
+
+# ggplot(data = lab.field.join.noextremes, aes(x = Chl_ugL, y = result_value), size = 3) +
+#   geom_point(shape = 19, size = 2, aes(color = Project)) +
+#   geom_smooth(method=lm) +
+#   geom_abline(aes(intercept=0, slope=1)) +
+#   xlab("YSI TA Chl ug/L") +
+#   ylab("Extracted chl ug/L") +
+#   facet_wrap(~Project, ncol = 5, scales = "free") +
+#   scale_x_continuous(limits = c(0, 8)) +
+#   scale_y_continuous(limits = c(0, 8))
 
 ggplot(data = lab.field.join.nooutliers, aes(x = Chl_ugL, y = result_value), size = 3) +
   geom_point(shape = 19, size = 2, aes(color = Project)) +
-  scale_fill_manual(values=as.vector(alphabet2(11))) +
-  # geom_smooth(method=lm) +
-  # geom_abline(aes(intercept=0, slope=1))
-  xlab("ProDSS Chl ug/L") +
-  ylab("Extracted chl ug/L")
-
-
-# ggplot(data = lab.field.join, aes(x = 1, y = result_value)) +
-#   geom_boxplot() 
-# 
-# ggplot(data = lab.field.join, aes(x = 1, y = Chl_ugL)) +
-#   geom_boxplot() 
-
-  # scale_color_manual(values = c("wallkill peers 2018" = "green", "wallkill special study 2017" = "purple", "wallkill special study 2018" = "black")) +
-  # scale_shape_manual(values = c("baseline" = 16, "event" = 17, "not observed" = 1)) +
-  # theme_classic() +  
-  # theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=0.5)) +
-  # scale_y_log10() +
-  # ggtitle("Temperature") +
+  # scale_color_manual(values=as.vector(alphabet2(11))) +
+  geom_smooth(method=lm) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~Project, ncol = 5, scales = "fixed") 
 
 # ggsave(filename = "Wallkill_field_temp.png", width = 10, height = 6, units = "in", path = file.path(root.dir, "data/Wallkill_2018/plots"))
 
 ```
 
-# Next steps:
-# Create equation, R^2
-# plot by EQUIP_USED and CHEM_SAMP_LOC as well
-# plot individual screening trips by crew (color scale)?
-# plot only lower level results (alene suggestion)
-# river size/width, other included params?
+
+# Plot by dom land use
+
+```{r echo = FALSE, fig.width=12, fig.height=6}
+
+# Subset data
+
+lab.field.join.landuse <- lab.field.join %>% 
+  filter(!is.na(LANDUSE))
+lab.field.join.noextremes.landuse <- lab.field.join.noextremes %>% 
+  filter(!is.na(LANDUSE))
+lab.field.join.nooutliers.landuse <- lab.field.join.nooutliers %>% 
+  filter(!is.na(LANDUSE))
+
+ggplot(data = lab.field.join.landuse, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = LANDUSE)) +
+  geom_smooth(method=lm) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~LANDUSE, ncol = 5, scales = "free") 
+
+ggplot(data = lab.field.join.noextremes.landuse, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = LANDUSE)) +
+  geom_smooth(method=lm) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~LANDUSE, ncol = 5, scales = "fixed") + 
+  # scale_x_continuous(limits = c(0, 12))
+  scale_y_continuous(limits = c(0, 10))
+
+ggplot(data = lab.field.join.nooutliers.landuse, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = LANDUSE)) +
+  # scale_color_manual(values=as.vector(alphabet2(11))) +
+  geom_smooth(method=lm) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~LANDUSE, ncol = 5, scales = "free") +
+  scale_x_continuous(limits = c(0, 6)) +
+  scale_y_continuous(limits = c(0, 6))
 
 
+# ggsave(filename = "Wallkill_field_temp.png", width = 10, height = 6, units = "in", path = file.path(root.dir, "data/Wallkill_2018/plots"))
+
+```
+
+
+Plot by stream width
+
+```{r echo = FALSE, fig.width=12, fig.height=6}
+
+# subset to where width data exists
+
+ggplot(data = lab.field.join, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = W_WIDTH)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+ggplot(data = lab.field.join.noextremes, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = W_WIDTH)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+ggplot(data = lab.field.join.nooutliers, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = W_WIDTH)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+
+# ggsave(filename = "Wallkill_field_temp.png", width = 10, height = 6, units = "in", path = file.path(root.dir, "data/Wallkill_2018/plots"))
+
+```
+
+Plot by current spd
+```{r echo = FALSE, fig.width=12, fig.height=6}
+
+# subset to where width data exists
+
+ggplot(data = lab.field.join, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = CUR_SPD)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+ggplot(data = lab.field.join.noextremes, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = CUR_SPD)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+ggplot(data = lab.field.join.nooutliers, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = CUR_SPD)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+
+# ggsave(filename = "Wallkill_field_temp.png", width = 10, height = 6, units = "in", path = file.path(root.dir, "data/Wallkill_2018/plots"))
+
+```
+
+Plot by depth 
+```{r echo = FALSE, fig.width=12, fig.height=6}
+
+# subset to where width data exists
+
+ggplot(data = lab.field.join, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = W_DEPTH)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+ggplot(data = lab.field.join.noextremes, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = W_DEPTH)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+ggplot(data = lab.field.join.nooutliers, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = W_DEPTH)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+
+# ggsave(filename = "Wallkill_field_temp.png", width = 10, height = 6, units = "in", path = file.path(root.dir, "data/Wallkill_2018/plots"))
+
+```
+
+
+Plot by canopy cover
+```{r echo = FALSE, fig.width=12, fig.height=4}
+
+# subset to where width data exists
+
+lab.field.join.bins <- lab.field.join %>%
+  mutate(canopy_cat = case_when(
+    CANOPY > 0 & CANOPY < 25 ~ "0-25%",
+    CANOPY >= 25  & CANOPY < 50 ~ "25-50%",
+    CANOPY >= 50  & CANOPY < 75 ~ "50-75%",
+    CANOPY >= 75  & CANOPY <= 100 ~ "75-100%",
+    TRUE ~ "BLANK"
+  ))
+
+lab.field.join.noextremes.bins <- lab.field.join.noextremes %>%
+  mutate(canopy_cat = case_when(
+    CANOPY > 0 & CANOPY < 25 ~ "0-25%",
+    CANOPY >= 25  & CANOPY < 50 ~ "25-50%",
+    CANOPY >= 50  & CANOPY < 75 ~ "50-75%",
+    CANOPY >= 75  & CANOPY <= 100 ~ "75-100%",
+    TRUE ~ "BLANK"
+  ))
+
+ggplot(data = lab.field.join, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = CANOPY)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+ggplot(data = lab.field.join.bins, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = canopy_cat)) +
+  # scale_color_gradient(low = "blue", high = "red") +
+  geom_smooth(method=lm, formula = y ~ x) +
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), parse = TRUE) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~canopy_cat, ncol = 5, scales = "fixed") +
+  theme_bw() +
+  scale_x_continuous(limits = c(0, 30)) +
+  scale_y_continuous(limits = c(0, 30))
+
+ggplot(data = lab.field.join.noextremes, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = CANOPY)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  theme_bw()
+
+ggplot(data = lab.field.join.noextremes.bins, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = canopy_cat)) +
+  # scale_color_gradient(low = "blue", high = "red") +
+  geom_smooth(method=lm, formula = y ~ x) +
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), parse = TRUE) +
+  geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") +
+  facet_wrap(~canopy_cat, ncol = 5, scales = "fixed") +
+  theme_bw()
+
+ggplot(data = lab.field.join.nooutliers, aes(x = Chl_ugL, y = result_value), size = 3) +
+  geom_point(shape = 19, size = 2, aes(color = CANOPY)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  # geom_smooth(method=lm) +
+  # geom_abline(aes(intercept=0, slope=1)) +
+  xlab("YSI TA Chl ug/L") +
+  ylab("Extracted chl ug/L") 
+
+
+# ggsave(filename = "Wallkill_field_temp.png", width = 10, height = 6, units = "in", path = file.path(root.dir, "data/Wallkill_2018/plots"))
+
+```
+
+
+Plot PC
 ```{r}
 
 
+
 ```
+
+# Next steps:
+
+# Create equation, R^2
+# How to numberically compare 1:1 line and linear regression (or just data itself)
+# plot individual screening trips by crew (color scale)?
+# river size/width, other included params?
+# Add in UFI fluoroprobe data (blue-green algae), compare to PC data.
 
